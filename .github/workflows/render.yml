@@ -1,0 +1,143 @@
+name: render-worker
+run-name: run ${{ inputs.job }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: job id
+        required: true
+        type: string
+      shards:
+        description: shard count
+        required: true
+        type: string
+      parts:
+        description: part count
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: render-${{ inputs.job }}
+  cancel-in-progress: false
+
+env:
+  BLENDER_VERSION: "5.2.2"
+  BLENDER_URL: "https://download.blender.org/release/Blender5.2/blender-5.2.2-linux-x64.tar.xz"
+  BLENDER_SUMS_URL: "https://download.blender.org/release/Blender5.2/blender-5.2.2.sha256"
+  BLENDER_SHA256: "84098912789dc450e95697c4184fb8a90acbe5111c2ba4aede3fecb57806a168"
+  MAX_SHARDS: "4"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          JOB: ${{ inputs.job }}
+          SHARDS: ${{ inputs.shards }}
+        run: |
+          set +x
+          case "$JOB" in *[!a-z0-9]*|"") echo "plan: rejected"; exit 1;; esac
+          case "$SHARDS" in *[!0-9]*|"") echo "plan: rejected"; exit 1;; esac
+          if [ "$SHARDS" -lt 1 ] || [ "$SHARDS" -gt "$MAX_SHARDS" ]; then echo "plan: rejected"; exit 1; fi
+          list=""; i=0
+          while [ "$i" -lt "$SHARDS" ]; do list="$list$i,"; i=$((i+1)); done
+          echo "matrix={\"shard\":[${list%,}]}" >> "$GITHUB_OUTPUT"
+          echo "plan: shards $SHARDS"
+
+  render:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      JOB: ${{ inputs.job }}
+      PARTS: ${{ inputs.parts }}
+      SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          sparse-checkout: .github/worker
+          persist-credentials: false
+
+      - name: setup
+        run: |
+          set +x
+          T0=$(date +%s)
+          CPUS=$(nproc)
+          sudo apt-get update -qq >/dev/null 2>&1 || true
+          sudo apt-get install -y -qq ffmpeg xz-utils libgl1 libegl1 libx11-6 libxext6 libxi6 libxrender1 libxxf86vm1 libxfixes3 libxkbcommon0 libsm6 libice6 libglib2.0-0 >/dev/null 2>&1 || { echo "setup: packages failed"; exit 1; }
+          python3 -m pip install --quiet --break-system-packages pillow >/dev/null 2>&1 || true
+          curl -fsSL "$BLENDER_URL" -o "$RUNNER_TEMP/b.tar.xz" >/dev/null 2>&1 || { echo "setup: download failed"; exit 1; }
+          GOT=$(sha256sum "$RUNNER_TEMP/b.tar.xz" | cut -d' ' -f1)
+          PUB=$(curl -fsSL "$BLENDER_SUMS_URL" 2>/dev/null | grep -F "blender-${BLENDER_VERSION}-linux-x64.tar.xz" | cut -d' ' -f1)
+          if [ "$GOT" != "$BLENDER_SHA256" ] || [ "$PUB" != "$BLENDER_SHA256" ]; then echo "setup: checksum mismatch"; exit 1; fi
+          mkdir -p "$RUNNER_TEMP/bl"
+          tar -xf "$RUNNER_TEMP/b.tar.xz" -C "$RUNNER_TEMP/bl" >/dev/null 2>&1
+          rm -f "$RUNNER_TEMP/b.tar.xz"
+          echo "BLENDER=$RUNNER_TEMP/bl/blender-${BLENDER_VERSION}-linux-x64/blender" >> "$GITHUB_ENV"
+          SETUP_SECS=$(( $(date +%s) - T0 ))
+          echo "setup: seconds $SETUP_SECS cpus $CPUS"
+
+      - name: fetch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JOB_KEY: ${{ secrets.JOB_KEY }}
+        run: |
+          set +x
+          W="$RUNNER_TEMP/w"
+          mkdir -p "$W/in"
+          gh release download "$JOB" --repo "$GITHUB_REPOSITORY" --dir "$W/in" >/dev/null 2>&1 || { echo "fetch: failed"; exit 1; }
+          N=$(find "$W/in" -type f | wc -l)
+          if [ "$N" != "$PARTS" ]; then echo "fetch: part count mismatch"; exit 1; fi
+          python3 .github/worker/blob.py open "$JOB|in" "$W/in" in "$W/pkg" || exit 1
+          python3 .github/worker/blob.py pins "$W/pkg/job_spec.json" "$BLENDER_VERSION" "$BLENDER_URL" || exit 1
+          rm -rf "$W/in"
+
+      - name: render
+        run: |
+          set +x
+          W="$RUNNER_TEMP/w"
+          IDS=$(python3 .github/worker/blob.py group "$W/pkg/groups.json" "$SHARD")
+          echo "render: start shard $SHARD"
+          T1=$(date +%s)
+          RC=0
+          python3 "$W/pkg/render_spec_runner.py" --spec "$W/pkg/job_spec.json" --pkg "$W/pkg" --work "$W/work" --out "$W/out" --blender "$BLENDER" --ffmpeg ffmpeg --gpus 1 --only "$IDS" >/dev/null 2>&1 || RC=$?
+          SECS=$(( $(date +%s) - T1 ))
+          FILES=$(find "$W/out" -type f | wc -l)
+          echo "render: shard $SHARD exit $RC seconds $SECS files $FILES"
+
+      - name: seal
+        env:
+          JOB_KEY: ${{ secrets.JOB_KEY }}
+        run: |
+          set +x
+          W="$RUNNER_TEMP/w"
+          mkdir -p "$W/up" "$W/out"
+          python3 .github/worker/blob.py seal "$JOB|out|$SHARD" "$W/out" "$W/up/r$SHARD" 1024 || exit 1
+
+      - name: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: res-${{ inputs.job }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/w/up
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: wipe
+        if: always()
+        run: |
+          set +x
+          rm -rf "$RUNNER_TEMP/w" "$RUNNER_TEMP/bl"
+          echo "wipe: done"
