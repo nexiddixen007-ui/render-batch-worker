@@ -76,7 +76,7 @@ jobs:
           T0=$(date +%s)
           CPUS=$(nproc)
           sudo apt-get update -qq >/dev/null 2>&1 || true
-          sudo apt-get install -y -qq ffmpeg xz-utils libgl1 libegl1 libx11-6 libxext6 libxi6 libxrender1 libxxf86vm1 libxfixes3 libxkbcommon0 libsm6 libice6 libglib2.0-0 >/dev/null 2>&1 || { echo "setup: packages failed"; exit 1; }
+          sudo apt-get install -y -qq ffmpeg xz-utils libgl1 libegl1 libx11-6 libxext6 libxi6 libxrender1 libxxf86vm1 libxfixes3 libxkbcommon0 libsm6 libice6 libglib2.0-0 >/dev/null 2>&1 || true
           python3 -m pip install --quiet --break-system-packages pillow >/dev/null 2>&1 || true
           curl -fsSL "$BLENDER_URL" -o "$RUNNER_TEMP/b.tar.xz" >/dev/null 2>&1 || { echo "setup: download failed"; exit 1; }
           GOT=$(sha256sum "$RUNNER_TEMP/b.tar.xz" | cut -d' ' -f1)
@@ -85,7 +85,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/bl"
           tar -xf "$RUNNER_TEMP/b.tar.xz" -C "$RUNNER_TEMP/bl" >/dev/null 2>&1
           rm -f "$RUNNER_TEMP/b.tar.xz"
-          echo "BLENDER=$RUNNER_TEMP/bl/blender-${BLENDER_VERSION}-linux-x64/blender" >> "$GITHUB_ENV"
+          B="$RUNNER_TEMP/bl/blender-${BLENDER_VERSION}-linux-x64/blender"
+          "$B" --version >/dev/null 2>&1 || { echo "setup: render failed"; exit 1; }
+          echo "BLENDER=$B" >> "$GITHUB_ENV"
           SETUP_SECS=$(( $(date +%s) - T0 ))
           echo "setup: seconds $SETUP_SECS cpus $CPUS"
 
