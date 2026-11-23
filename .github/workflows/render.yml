@@ -111,10 +111,20 @@ jobs:
           set +x
           W="$RUNNER_TEMP/w"
           IDS=$(python3 .github/worker/blob.py group "$W/pkg/groups.json" "$SHARD")
+          SITE=""
+          PKGS=$(python3 -c "import json,sys; print(' '.join(json.load(open(sys.argv[1])).get('pip_into_blender') or []))" "$W/pkg/job_spec.json" 2>/dev/null || true)
+          if [ -n "$PKGS" ]; then
+            BPY=""
+            for P in "$RUNNER_TEMP"/bl/blender-*/*/python/bin/python3.*; do BPY="$P"; done
+            SITE="$RUNNER_TEMP/bpy_site"
+            "$BPY" -m ensurepip >/dev/null 2>&1 || true
+            "$BPY" -m pip install -q --no-deps --target "$SITE" $PKGS >/dev/null 2>&1 || { echo "setup: failed"; exit 1; }
+            echo "setup: packages"
+          fi
           echo "render: start shard $SHARD"
           T1=$(date +%s)
           RC=0
-          python3 "$W/pkg/render_spec_runner.py" --spec "$W/pkg/job_spec.json" --pkg "$W/pkg" --work "$W/work" --out "$W/out" --blender "$BLENDER" --ffmpeg ffmpeg --gpus 1 --only "$IDS" >/dev/null 2>&1 || RC=$?
+          python3 "$W/pkg/render_spec_runner.py" --spec "$W/pkg/job_spec.json" --pkg "$W/pkg" --work "$W/work" --out "$W/out" --blender "$BLENDER" --ffmpeg ffmpeg --gpus 1 ${SITE:+--bpy-site "$SITE"} --only "$IDS" >/dev/null 2>&1 || RC=$?
           SECS=$(( $(date +%s) - T1 ))
           FILES=$(find "$W/out" -type f | wc -l)
           echo "render: shard $SHARD exit $RC seconds $SECS files $FILES"
