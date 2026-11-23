@@ -70,6 +70,12 @@ jobs:
           sparse-checkout: .github/worker
           persist-credentials: false
 
+      - name: blender cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: ${{ runner.temp }}/bl
+          key: blender-5.2.2-84098912789d-linux-x64
+
       - name: setup
         run: |
           set +x
@@ -78,14 +84,18 @@ jobs:
           sudo apt-get update -qq >/dev/null 2>&1 || true
           sudo apt-get install -y -qq ffmpeg xz-utils libgl1 libegl1 libx11-6 libxext6 libxi6 libxrender1 libxxf86vm1 libxfixes3 libxkbcommon0 libsm6 libice6 libglib2.0-0 >/dev/null 2>&1 || true
           python3 -m pip install --quiet --break-system-packages pillow >/dev/null 2>&1 || true
-          curl -fsSL "$BLENDER_URL" -o "$RUNNER_TEMP/b.tar.xz" >/dev/null 2>&1 || { echo "setup: download failed"; exit 1; }
-          GOT=$(sha256sum "$RUNNER_TEMP/b.tar.xz" | cut -d' ' -f1)
-          PUB=$(curl -fsSL "$BLENDER_SUMS_URL" 2>/dev/null | grep -F "blender-${BLENDER_VERSION}-linux-x64.tar.xz" | cut -d' ' -f1)
-          if [ "$GOT" != "$BLENDER_SHA256" ] || [ "$PUB" != "$BLENDER_SHA256" ]; then echo "setup: checksum mismatch"; exit 1; fi
-          mkdir -p "$RUNNER_TEMP/bl"
-          tar -xf "$RUNNER_TEMP/b.tar.xz" -C "$RUNNER_TEMP/bl" >/dev/null 2>&1
-          rm -f "$RUNNER_TEMP/b.tar.xz"
           B="$RUNNER_TEMP/bl/blender-${BLENDER_VERSION}-linux-x64/blender"
+          if [ -x "$B" ]; then
+            echo "setup: cached"
+          else
+            curl -fsSL "$BLENDER_URL" -o "$RUNNER_TEMP/b.tar.xz" >/dev/null 2>&1 || { echo "setup: download failed"; exit 1; }
+            GOT=$(sha256sum "$RUNNER_TEMP/b.tar.xz" | cut -d' ' -f1)
+            PUB=$(curl -fsSL "$BLENDER_SUMS_URL" 2>/dev/null | grep -F "blender-${BLENDER_VERSION}-linux-x64.tar.xz" | cut -d' ' -f1)
+            if [ "$GOT" != "$BLENDER_SHA256" ] || [ "$PUB" != "$BLENDER_SHA256" ]; then echo "setup: checksum mismatch"; exit 1; fi
+            mkdir -p "$RUNNER_TEMP/bl"
+            tar -xf "$RUNNER_TEMP/b.tar.xz" -C "$RUNNER_TEMP/bl" >/dev/null 2>&1
+            rm -f "$RUNNER_TEMP/b.tar.xz"
+          fi
           "$B" --version >/dev/null 2>&1 || { echo "setup: render failed"; exit 1; }
           echo "BLENDER=$B" >> "$GITHUB_ENV"
           SETUP_SECS=$(( $(date +%s) - T0 ))
@@ -151,5 +161,5 @@ jobs:
         if: always()
         run: |
           set +x
-          rm -rf "$RUNNER_TEMP/w" "$RUNNER_TEMP/bl"
+          rm -rf "$RUNNER_TEMP/w" "$RUNNER_TEMP/bpy_site" "$RUNNER_TEMP/b.tar.xz"
           echo "wipe: done"

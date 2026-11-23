@@ -145,6 +145,10 @@ def pack(root: Path, tar_path: Path, scan: bool = True, extra: dict | None = Non
         tf.addfile(ti, io.BytesIO(data))
         for f in files:
             tf.add(f, arcname=f.relative_to(root).as_posix(), recursive=False)
+    with tarfile.open(tar_path, "r") as tf:           # every member exactly once (a repeated member makes a host refuse the bundle)
+        names = tf.getnames()
+    if len(names) != len(set(names)):
+        raise BlobError("duplicate_members")
     return man
 
 
@@ -426,6 +430,22 @@ def selftest() -> int:
             ok(False, "path_escape_must_fail")
         except BlobError:
             pass
+        # a tar that repeats a member is refused on unpack (must-fail) and a duplicate-free pack passes the pack-side check
+        dupt = td / "dup.tar"
+        with tarfile.open(dupt, "w") as tf:
+            m = json.dumps({"files": {"a.txt": {"sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881", "size": 1}}}).encode()
+            ti = tarfile.TarInfo(MANIFEST)
+            ti.size = len(m)
+            tf.addfile(ti, io.BytesIO(m))
+            for _ in range(2):
+                ti2 = tarfile.TarInfo("a.txt")
+                ti2.size = 1
+                tf.addfile(ti2, io.BytesIO(b"x"))
+        try:
+            unpack(dupt, td / "dd")
+            ok(False, "duplicate_member_must_fail")
+        except BlobError as e:
+            ok(str(e) == "unexpected_member", "duplicate_member_refused")
         # a file changed after packing (hash vs manifest)
         t2 = td / "t2.tar"
         pack(src, t2)
